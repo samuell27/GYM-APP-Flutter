@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'views/home_view.dart';
+
 import 'views/onboarding_view.dart';
+import 'views/home_view.dart';
 
 void main() {
   runApp(const GymTrackerApp());
@@ -83,7 +84,7 @@ class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
 
   final List<Widget> _views = [
-    const HomeView(), 
+    const HomeView(), // A nossa nova Home ligada!
     const Center(child: Text('Treinos', style: TextStyle(fontSize: 24))),
     const Center(child: Text('Progresso', style: TextStyle(fontSize: 24))),
     const Center(child: Text('Perfil', style: TextStyle(fontSize: 24))),
@@ -109,4 +110,4 @@ class _MainNavigationState extends State<MainNavigation> {
       ),
     );
   }
-} 	
+}
