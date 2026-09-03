@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'views/onboarding_view.dart';
 import 'views/home_view.dart';
+import 'views/profile_view.dart';
 
 void main() {
   runApp(const GymTrackerApp());
@@ -88,6 +89,7 @@ class _MainNavigationState extends State<MainNavigation> {
     const Center(child: Text('Treinos', style: TextStyle(fontSize: 24))),
     const Center(child: Text('Progresso', style: TextStyle(fontSize: 24))),
     const Center(child: Text('Perfil', style: TextStyle(fontSize: 24))),
+    const ProfileView(),
   ];
 
   @override
