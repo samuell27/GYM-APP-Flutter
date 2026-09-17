@@ -1,12 +1,24 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+// Importações do Firebase
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+
+// Nossas Telas
 import 'views/onboarding_view.dart';
 import 'views/home_view.dart';
-import 'views/profile_view.dart';
 
-void main() {
+void main() async {
+  // Garante que o Flutter está pronto antes de chamar código nativo
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Inicia a ligação com o Firebase
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
   runApp(const GymTrackerApp());
 }
 
@@ -52,7 +64,6 @@ class _AuthWrapperState extends State<AuthWrapper> {
   Future<void> _checkFirstLaunch() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      // Se for nulo, significa que é a primeira vez (true)
       _isNewUser = prefs.getBool('isNewUser') ?? true;
       _isLoading = false;
     });
@@ -85,91 +96,29 @@ class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
 
   final List<Widget> _views = [
-    const HomeView(), // A nossa nova Home ligada!
+    const HomeView(),
     const Center(child: Text('Treinos', style: TextStyle(fontSize: 24))),
     const Center(child: Text('Progresso', style: TextStyle(fontSize: 24))),
     const Center(child: Text('Perfil', style: TextStyle(fontSize: 24))),
-    const ProfileView(),
-  ];
-
-  final List<Map<String, dynamic>> _navItems = [
-    {'icon': LucideIcons.home, 'label': 'Início'},
-    {'icon': LucideIcons.dumbbell, 'label': 'Treinos'},
-    {'icon': LucideIcons.barChart2, 'label': 'Progresso'},
-    {'icon': LucideIcons.user, 'label': 'Perfil'},
   ];
 
 @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: _views[_currentIndex],
-      // --- BARRA DE NAVEGAÇÃO CUSTOMIZADA E ANIMADA ---
-      bottomNavigationBar: Container(
-        height: 88, // Altura confortável para os dedos
-        padding: const EdgeInsets.only(bottom: 20, left: 16, right: 16, top: 12),
-        decoration: BoxDecoration(
-          color: const Color(0xFF0a0a0a).withOpacity(0.95),
-          border: const Border(top: BorderSide(color: Colors.white10, width: 1)),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: List.generate(_navItems.length, (index) {
-            bool isSelected = _currentIndex == index;
-
-            return GestureDetector(
-              onTap: () => setState(() => _currentIndex = index),
-              behavior: HitTestBehavior.opaque,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeOutCubic, // Curva suave e elástica
-                padding: EdgeInsets.symmetric(
-                  horizontal: isSelected ? 20 : 12, 
-                  vertical: 12
-                ),
-                decoration: BoxDecoration(
-                  color: isSelected 
-                      ? const Color(0xFF22c55e).withOpacity(0.15) 
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  children: [
-                    // Animação de escala e cor no ícone
-                    AnimatedScale(
-                      scale: isSelected ? 1.1 : 1.0,
-                      duration: const Duration(milliseconds: 250),
-                      child: Icon(
-                        _navItems[index]['icon'],
-                        color: isSelected ? const Color(0xFF22c55e) : Colors.grey.shade600,
-                        size: 24,
-                      ),
-                    ),
-                    
-                    // O texto só aparece se o ícone estiver selecionado
-                    AnimatedSize(
-                      duration: const Duration(milliseconds: 250),
-                      curve: Curves.easeOutCubic,
-                      child: SizedBox(
-                        width: isSelected ? null : 0,
-                        child: Padding(
-                          padding: const EdgeInsets.only(left: 8),
-                          child: Text(
-                            _navItems[index]['label'],
-                            style: const TextStyle(
-                              color: Color(0xFF22c55e),
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }),
-        ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (index) => setState(() => _currentIndex = index),
+        backgroundColor: const Color(0xFF0a0a0a),
+        type: BottomNavigationBarType.fixed,
+        selectedItemColor: const Color(0xFF22c55e),
+        unselectedItemColor: Colors.grey.shade600,
+        items: const [
+          BottomNavigationBarItem(icon: Icon(LucideIcons.home), label: 'Início'),
+          BottomNavigationBarItem(icon: Icon(LucideIcons.dumbbell), label: 'Treinos'),
+          BottomNavigationBarItem(icon: Icon(LucideIcons.barChart2), label: 'Progresso'),
+          BottomNavigationBarItem(icon: Icon(LucideIcons.user), label: 'Perfil'),
+        ],
       ),
     );
   }
