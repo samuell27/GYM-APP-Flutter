@@ -1,12 +1,7 @@
 import 'package:flutter/material.dart';
-<<<<<<< HEAD
-import 'package:lucide_icons/lucide_icons.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-=======
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
->>>>>>> 595f640 (feat: integracao Firebase users, sistema de login e reformulacao do onboarding)
 
 class ProfileView extends StatefulWidget {
   const ProfileView({super.key});
@@ -16,25 +11,15 @@ class ProfileView extends StatefulWidget {
 }
 
 class _ProfileViewState extends State<ProfileView> {
-<<<<<<< HEAD
+  final TextEditingController _apiKeyController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _apiKeyController = TextEditingController();
+  final TextEditingController _ageController = TextEditingController();
+  final TextEditingController _weightController = TextEditingController();
+  final TextEditingController _heightController = TextEditingController();
 
   String _goal = 'Hipertrofia';
   String _aiProvider = 'gemini';
-  String _geminiModel = 'gemini-2.5-flash-lite';
-=======
-  final TextEditingController _apiKeyController = TextEditingController();
-
-  String _name = 'Utilizador';
-  String _goal = 'Hipertrofia';
-  String _age = '';
-  String _weight = '';
-  String _height = '';
-
-  String _aiProvider = 'gemini';
-  String _geminiModel = 'gemini-1.5-flash';
->>>>>>> 595f640 (feat: integracao Firebase users, sistema de login e reformulacao do onboarding)
+  final String _geminiModel = 'gemini-1.5-flash';
 
   @override
   void initState() {
@@ -45,23 +30,13 @@ class _ProfileViewState extends State<ProfileView> {
   Future<void> _loadProfile() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-<<<<<<< HEAD
       _nameController.text = prefs.getString('userName') ?? 'Utilizador';
+      _ageController.text = prefs.getString('userAge') ?? '';
+      _weightController.text = prefs.getString('userWeight') ?? '';
+      _heightController.text = prefs.getString('userHeight') ?? '';
       _goal = prefs.getString('userGoal') ?? 'Hipertrofia';
       _apiKeyController.text = prefs.getString('apiKey') ?? '';
       _aiProvider = prefs.getString('aiProvider') ?? 'gemini';
-      _geminiModel = prefs.getString('geminiModel') ?? 'gemini-2.5-flash-lite';
-=======
-      _name = prefs.getString('userName') ?? 'Utilizador';
-      _goal = prefs.getString('userGoal') ?? 'Hipertrofia';
-      _age = prefs.getString('userAge') ?? '';
-      _weight = prefs.getString('userWeight') ?? '';
-      _height = prefs.getString('userHeight') ?? '';
-
-      _apiKeyController.text = prefs.getString('apiKey') ?? '';
-      _aiProvider = prefs.getString('aiProvider') ?? 'gemini';
-      _geminiModel = prefs.getString('geminiModel') ?? 'gemini-1.5-flash';
->>>>>>> 595f640 (feat: integracao Firebase users, sistema de login e reformulacao do onboarding)
     });
   }
 
@@ -70,16 +45,7 @@ class _ProfileViewState extends State<ProfileView> {
     await prefs.setString(key, value);
   }
 
-<<<<<<< HEAD
-  @override
-  Widget build(BuildContext context) {
-    String initial = _nameController.text.isNotEmpty ? _nameController.text[0].toUpperCase() : 'U';
-=======
   void _showEditProfileDialog() {
-    TextEditingController nameCtrl = TextEditingController(text: _name);
-    TextEditingController ageCtrl = TextEditingController(text: _age);
-    TextEditingController weightCtrl = TextEditingController(text: _weight);
-    TextEditingController heightCtrl = TextEditingController(text: _height);
     String tempGoal = _goal;
 
     showModalBottomSheet(
@@ -115,21 +81,22 @@ class _ProfileViewState extends State<ProfileView> {
                           fontSize: 20,
                           fontWeight: FontWeight.bold)),
                   const SizedBox(height: 24),
-                  _buildProfileTextField('Nome', nameCtrl, TextInputType.name),
+                  _buildProfileTextField(
+                      'Nome', _nameController, TextInputType.name),
                   const SizedBox(height: 12),
                   Row(
                     children: [
                       Expanded(
                           child: _buildProfileTextField(
-                              'Idade', ageCtrl, TextInputType.number)),
+                              'Idade', _ageController, TextInputType.number)),
                       const SizedBox(width: 12),
                       Expanded(
-                          child: _buildProfileTextField(
-                              'Peso (kg)', weightCtrl, TextInputType.number)),
+                          child: _buildProfileTextField('Peso (kg)',
+                              _weightController, TextInputType.number)),
                       const SizedBox(width: 12),
                       Expanded(
-                          child: _buildProfileTextField(
-                              'Altura (cm)', heightCtrl, TextInputType.number)),
+                          child: _buildProfileTextField('Altura (cm)',
+                              _heightController, TextInputType.number)),
                     ],
                   ),
                   const SizedBox(height: 16),
@@ -172,22 +139,14 @@ class _ProfileViewState extends State<ProfileView> {
                     height: 56,
                     child: ElevatedButton(
                       onPressed: () async {
-                        setState(() {
-                          _name = nameCtrl.text.trim();
-                          _age = ageCtrl.text.trim();
-                          _weight = weightCtrl.text.trim();
-                          _height = heightCtrl.text.trim();
-                          _goal = tempGoal;
-                        });
+                        setState(() => _goal = tempGoal);
 
-                        // 1. Salva localmente
-                        _saveData('userName', _name);
-                        _saveData('userAge', _age);
-                        _saveData('userWeight', _weight);
-                        _saveData('userHeight', _height);
+                        _saveData('userName', _nameController.text.trim());
+                        _saveData('userAge', _ageController.text.trim());
+                        _saveData('userWeight', _weightController.text.trim());
+                        _saveData('userHeight', _heightController.text.trim());
                         _saveData('userGoal', _goal);
 
-                        // 2. ATUALIZA NA NUVEM (FIREBASE)
                         try {
                           final prefs = await SharedPreferences.getInstance();
                           final String userEmail =
@@ -198,10 +157,10 @@ class _ProfileViewState extends State<ProfileView> {
                                 .collection('users')
                                 .doc(userEmail)
                                 .update({
-                              'name': _name,
-                              'age': _age,
-                              'weight': _weight,
-                              'height': _height,
+                              'name': _nameController.text.trim(),
+                              'age': _ageController.text.trim(),
+                              'weight': _weightController.text.trim(),
+                              'height': _heightController.text.trim(),
                               'goal': _goal,
                             });
                           }
@@ -456,7 +415,6 @@ class _ProfileViewState extends State<ProfileView> {
         final String userEmail = prefs.getString('userEmail') ?? '';
 
         if (userEmail.isNotEmpty) {
-          // Apaga os treinos
           var snapshot = await FirebaseFirestore.instance
               .collection('workout_history')
               .where('userEmail', isEqualTo: userEmail)
@@ -465,8 +423,6 @@ class _ProfileViewState extends State<ProfileView> {
           for (var doc in snapshot.docs) {
             await doc.reference.delete();
           }
-
-          // Apaga o perfil de utilizador
           await FirebaseFirestore.instance
               .collection('users')
               .doc(userEmail)
@@ -486,8 +442,8 @@ class _ProfileViewState extends State<ProfileView> {
 
   @override
   Widget build(BuildContext context) {
-    String initial = _name.isNotEmpty ? _name[0].toUpperCase() : 'U';
->>>>>>> 595f640 (feat: integracao Firebase users, sistema de login e reformulacao do onboarding)
+    String name = _nameController.text.trim();
+    String initial = name.isNotEmpty ? name[0].toUpperCase() : 'U';
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -495,105 +451,6 @@ class _ProfileViewState extends State<ProfileView> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-<<<<<<< HEAD
-            const Text('O seu Perfil', style: TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w900, letterSpacing: -1)),
-            const SizedBox(height: 24),
-            
-            // Cartão de Resumo
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1c1c1e),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: Colors.white.withOpacity(0.05)),
-              ),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    radius: 32,
-                    backgroundColor: const Color(0xFF22c55e).withOpacity(0.2),
-                    child: Text(initial, style: const TextStyle(color: Color(0xFF22c55e), fontSize: 24, fontWeight: FontWeight.bold)),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_nameController.text, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            const Text('Objetivo: ', style: TextStyle(color: Colors.grey, fontSize: 14)),
-                            Text(_goal, style: const TextStyle(color: Color(0xFF22c55e), fontSize: 14, fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 32),
-            const Text('CONFIGURAÇÕES DE IA', style: TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
-            const SizedBox(height: 16),
-
-            // Configurações de IA
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1c1c1e),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: Colors.white.withOpacity(0.05)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Provedor AI', style: TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    decoration: BoxDecoration(color: const Color(0xFF0a0a0a), borderRadius: BorderRadius.circular(12)),
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton<String>(
-                        value: _aiProvider,
-                        isExpanded: true,
-                        dropdownColor: const Color(0xFF1c1c1e),
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                        items: ['gemini', 'openai'].map((String value) {
-                          return DropdownMenuItem<String>(value: value, child: Text(value.toUpperCase()));
-                        }).toList(),
-                        onChanged: (newValue) {
-                          setState(() => _aiProvider = newValue!);
-                          _saveData('aiProvider', newValue!);
-                        },
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('API Key', style: TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _apiKeyController,
-                    obscureText: true,
-                    style: const TextStyle(color: Colors.white, fontFamily: 'monospace'),
-                    decoration: InputDecoration(
-                      hintText: 'Sua chave secreta...',
-                      hintStyle: const TextStyle(color: Colors.white30),
-                      filled: true,
-                      fillColor: const Color(0xFF0a0a0a),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                    ),
-                    onChanged: (val) => _saveData('apiKey', val),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 40),
-            
-            // Botão Apagar Conta
-=======
             const Text('O seu Perfil',
                 style: TextStyle(
                     color: Colors.white,
@@ -630,7 +487,7 @@ class _ProfileViewState extends State<ProfileView> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(_name,
+                            Text(name.isNotEmpty ? name : 'Utilizador',
                                 style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 20,
@@ -697,24 +554,10 @@ class _ProfileViewState extends State<ProfileView> {
               ),
             ),
             const SizedBox(height: 40),
->>>>>>> 595f640 (feat: integracao Firebase users, sistema de login e reformulacao do onboarding)
             SizedBox(
               width: double.infinity,
               height: 56,
               child: OutlinedButton.icon(
-<<<<<<< HEAD
-                onPressed: () async {
-                  // Apaga os dados e limpa a memória
-                  final prefs = await SharedPreferences.getInstance();
-                  await prefs.clear();
-                },
-                icon: const Icon(LucideIcons.logOut, color: Colors.red),
-                label: const Text('APAGAR CONTA E DADOS', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
-                style: OutlinedButton.styleFrom(
-                  side: BorderSide(color: Colors.red.withOpacity(0.3)),
-                  backgroundColor: Colors.red.withOpacity(0.05),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-=======
                 onPressed: _showLogoutConfirmation,
                 icon: const Icon(LucideIcons.logOut, color: Colors.white),
                 label: const Text('SAIR DA CONTA',
@@ -742,18 +585,13 @@ class _ProfileViewState extends State<ProfileView> {
                   backgroundColor: Colors.red.withOpacity(0.05),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16)),
->>>>>>> 595f640 (feat: integracao Firebase users, sistema de login e reformulacao do onboarding)
                 ),
               ),
             ),
             const SizedBox(height: 24),
-<<<<<<< HEAD
-            const Center(child: Text('GymTracker Flutter v1.0', style: TextStyle(color: Colors.grey, fontSize: 12))),
-=======
             const Center(
-                child: Text('GymTracker Flutter v1.0.1',
+                child: Text('GymTracker Flutter v1.0',
                     style: TextStyle(color: Colors.grey, fontSize: 12))),
->>>>>>> 595f640 (feat: integracao Firebase users, sistema de login e reformulacao do onboarding)
           ],
         ),
       ),

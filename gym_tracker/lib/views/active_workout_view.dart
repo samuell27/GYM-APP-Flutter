@@ -4,11 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
+import '../models/workout.dart';
 
 class ActiveWorkoutView extends StatefulWidget {
   final String day;
-  final List<Map<String, dynamic>> exercises;
+  final List<Map<String, dynamic>>
+      exercises; // Mantém Map na entrada até refatorarmos a IA
 
   const ActiveWorkoutView(
       {super.key, required this.day, required this.exercises});
@@ -18,29 +21,28 @@ class ActiveWorkoutView extends StatefulWidget {
 }
 
 class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
+  // Estado fortemente tipado
+  List<Exercise> _activeExercises = [];
+
+  // Timer de treino resistente a background
   Timer? _timer;
   int _elapsedSeconds = 0;
-  bool _isSaving = false;
+  DateTime? _resumeTime;
+  int _secondsBeforePause = 0;
   bool _isPaused = false;
+  bool _isSaving = false;
 
-  List<Map<String, dynamic>> _activeExercises = [];
-
+  // Timer de descanso resistente a background
   Timer? _restTimer;
   int _restTime = 0;
+  DateTime? _restTargetTime;
   bool _isResting = false;
   int _preferredRestTime = 60;
-
-  final Map<String, List<Map<String, dynamic>>> _setLogs = {};
-
-  final Map<String, DateTime> _exStartTime = {};
-  final Map<String, DateTime> _exEndTime = {};
 
   @override
   void initState() {
     super.initState();
-    _activeExercises =
-        widget.exercises.map((e) => Map<String, dynamic>.from(e)).toList();
-    _initializeSets();
+    _initializeModels();
     _loadPreferredRestTime();
     _startTimer();
   }
@@ -59,37 +61,69 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
     });
   }
 
-  void _initializeSets() {
-    for (var ex in _activeExercises) {
-      int setsCount = int.tryParse(ex['sets'].toString()) ?? 0;
-      _setLogs[ex['id']] = List.generate(
+  // Converte a entrada bruta da IA em objetos tipados
+  void _initializeModels() {
+    _activeExercises = widget.exercises.map((exMap) {
+      int setsCount = int.tryParse(exMap['sets'].toString()) ?? 4;
+      String repsStr = exMap['reps'].toString();
+      int targetReps = int.tryParse(repsStr.split('-').last) ?? 10;
+      int targetWeight = int.tryParse(exMap['load'].toString()) ?? 0;
+
+      List<SetLog> sets = List.generate(
           setsCount,
-          (index) => {
-                'completed': false,
-                'weight': ex['load'],
-                'reps': ex['reps'].toString().split('-').last,
-              });
-    }
+          (index) => SetLog(
+                weight: targetWeight,
+                reps: targetReps,
+                isCompleted: false,
+              ));
+
+      return Exercise(
+        id: exMap['id']?.toString() ??
+            DateTime.now().millisecondsSinceEpoch.toString(),
+        name: exMap['name']?.toString() ?? 'Exercício',
+        sets: sets,
+      );
+    }).toList();
   }
 
+  // Cronômetro baseado em delta de tempo real
   void _startTimer() {
+    _resumeTime = DateTime.now();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!_isPaused) {
-        setState(() => _elapsedSeconds++);
+      if (!_isPaused && _resumeTime != null) {
+        setState(() {
+          _elapsedSeconds = _secondsBeforePause +
+              DateTime.now().difference(_resumeTime!).inSeconds;
+        });
       }
     });
   }
 
+  void _togglePause() {
+    setState(() {
+      _isPaused = !_isPaused;
+      if (_isPaused) {
+        _secondsBeforePause = _elapsedSeconds;
+      } else {
+        _resumeTime = DateTime.now();
+      }
+    });
+  }
+
+  // Descanso baseado em alvo de tempo futuro
   void _startRestTimer(int seconds) {
     _restTimer?.cancel();
+    _restTargetTime = DateTime.now().add(Duration(seconds: seconds));
+
     setState(() {
       _restTime = seconds;
       _isResting = true;
     });
 
     _restTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_restTime > 0) {
-        setState(() => _restTime--);
+      final now = DateTime.now();
+      if (_restTargetTime != null && now.isBefore(_restTargetTime!)) {
+        setState(() => _restTime = _restTargetTime!.difference(now).inSeconds);
       } else {
         timer.cancel();
         setState(() => _isResting = false);
@@ -100,17 +134,14 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
 
   void _removeExercise(String exId) {
     setState(() {
-      _activeExercises.removeWhere((ex) => ex['id'] == exId);
-      _setLogs.remove(exId);
-      _exStartTime.remove(exId);
-      _exEndTime.remove(exId);
+      _activeExercises.removeWhere((ex) => ex.id == exId);
     });
   }
 
   void _showAddExerciseDialog() {
     TextEditingController nameCtrl = TextEditingController();
     TextEditingController setsCtrl = TextEditingController(text: '4');
-    TextEditingController repsCtrl = TextEditingController(text: '10-12');
+    TextEditingController repsCtrl = TextEditingController(text: '10');
 
     showDialog(
         context: context,
@@ -161,6 +192,7 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                     Expanded(
                       child: TextField(
                         controller: repsCtrl,
+                        keyboardType: TextInputType.number,
                         style: const TextStyle(color: Colors.white),
                         decoration: InputDecoration(
                           hintText: 'Reps',
@@ -186,26 +218,18 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                 onPressed: () {
                   if (nameCtrl.text.trim().isEmpty) return;
 
-                  String newId =
-                      DateTime.now().millisecondsSinceEpoch.toString();
                   int sets = int.tryParse(setsCtrl.text) ?? 4;
+                  int reps = int.tryParse(repsCtrl.text) ?? 10;
 
                   setState(() {
-                    _activeExercises.add({
-                      'id': newId,
-                      'name': nameCtrl.text.trim(),
-                      'sets': sets.toString(),
-                      'reps': repsCtrl.text.trim(),
-                      'load': '0',
-                    });
-
-                    _setLogs[newId] = List.generate(
-                        sets,
-                        (index) => {
-                              'completed': false,
-                              'weight': '0',
-                              'reps': repsCtrl.text.trim().split('-').last,
-                            });
+                    _activeExercises.add(Exercise(
+                      id: DateTime.now().millisecondsSinceEpoch.toString(),
+                      name: nameCtrl.text.trim(),
+                      sets: List.generate(
+                          sets,
+                          (index) => SetLog(
+                              weight: 0, reps: reps, isCompleted: false)),
+                    ));
                   });
                   Navigator.pop(context);
                 },
@@ -326,15 +350,12 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
-  void _toggleSet(String exId, int setIndex) {
+  void _toggleSet(Exercise exercise, int setIndex) {
     setState(() {
-      bool isDone = _setLogs[exId]![setIndex]['completed'];
-      _setLogs[exId]![setIndex]['completed'] = !isDone;
+      bool isDone = exercise.sets[setIndex].isCompleted;
+      exercise.sets[setIndex].isCompleted = !isDone;
 
       if (!isDone) {
-        _exStartTime[exId] ??= DateTime.now();
-        _exEndTime[exId] = DateTime.now();
-
         _startRestTimer(_preferredRestTime);
       }
     });
@@ -344,9 +365,8 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
     int total = 0;
     int completed = 0;
     for (var ex in _activeExercises) {
-      var sets = _setLogs[ex['id']] ?? [];
-      total += sets.length;
-      completed += sets.where((s) => s['completed'] == true).length;
+      total += ex.sets.length;
+      completed += ex.sets.where((s) => s.isCompleted).length;
     }
     return total == 0 ? 0 : completed / total;
   }
@@ -356,92 +376,49 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
     setState(() => _isSaving = true);
 
     try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception('Utilizador não autenticado.');
+
+      List<Exercise> completedExercises = [];
       int totalVolume = 0;
-      int completedExercisesCount = 0;
-      List<Map<String, dynamic>> completedExercisesDetails = [];
 
       for (var ex in _activeExercises) {
-        var sets = _setLogs[ex['id']] ?? [];
-        List<Map<String, dynamic>> completedSetsList = [];
-        int exVolume = 0;
+        var completedSets = ex.sets.where((s) => s.isCompleted).toList();
 
-        for (var set in sets) {
-          if (set['completed'] == true) {
-            int weight = int.tryParse(set['weight'].toString()) ?? 0;
-            int reps = int.tryParse(set['reps'].toString()) ?? 0;
-
-            completedSetsList.add({
-              'weight': weight,
-              'reps': reps,
-            });
-
-            int setVol = weight * reps;
-            totalVolume += setVol;
-            exVolume += setVol;
+        if (completedSets.isNotEmpty) {
+          for (var set in completedSets) {
+            totalVolume += (set.weight * set.reps);
           }
-        }
-
-        if (completedSetsList.isNotEmpty) {
-          completedExercisesCount++;
-
-          int durationSeconds = 0;
-          if (_exStartTime[ex['id']] != null && _exEndTime[ex['id']] != null) {
-            durationSeconds = _exEndTime[ex['id']]!
-                .difference(_exStartTime[ex['id']]!)
-                .inSeconds;
-          }
-
-          completedExercisesDetails.add({
-            'name': ex['name'],
-            'sets_completed': completedSetsList.length,
-            'volume': exVolume,
-            'sets_detail': completedSetsList,
-            'duration_seconds': durationSeconds,
-          });
+          completedExercises.add(Exercise(
+            id: ex.id,
+            name: ex.name,
+            sets: completedSets,
+            restSeconds: ex.restSeconds,
+          ));
         }
       }
 
-      if (completedExercisesCount > 0) {
+      if (completedExercises.isNotEmpty) {
+        final session = WorkoutSession(
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          dateIso: DateTime.now().toIso8601String(),
+          name: 'Treino de ${widget.day}',
+          exercises: completedExercises,
+          userUid: user.uid,
+        );
+
+        // Firebase: Salva o objeto serializado de forma segura
+        await FirebaseFirestore.instance
+            .collection('workout_history')
+            .add(session.toJson());
+
+        // Cache local: Adiciona ao início da lista
         final prefs = await SharedPreferences.getInstance();
-
-        // --- ADIÇÃO DE SEGURANÇA MULTI-UTILIZADOR ---
-        final String userEmail =
-            prefs.getString('userEmail') ?? 'anonimo@gymtracker.com';
-
         final String? historyJson = prefs.getString('workout_history');
-
-        List<dynamic> history = [];
-        if (historyJson != null) {
-          try {
-            history = jsonDecode(historyJson);
-          } catch (e) {
-            history = [];
-          }
-        }
-
-        final now = DateTime.now();
-        final dateStr =
-            '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}';
-
-        history.insert(0, {
-          'date': dateStr,
-          'name': 'Treino de ${widget.day}',
-          'exercises': completedExercisesCount,
-          'volume': totalVolume.toString(),
-          'exerciseList': completedExercisesDetails,
-        });
-
+        List<dynamic> history =
+            historyJson != null ? jsonDecode(historyJson) : [];
+        history.insert(0, session.toJson());
         await prefs.setString('workout_history', jsonEncode(history));
-
-        await FirebaseFirestore.instance.collection('workout_history').add({
-          'userEmail': userEmail, // <-- CHAVE DE IDENTIFICAÇÃO NA NUVEM
-          'date': dateStr,
-          'name': 'Treino de ${widget.day}',
-          'exercises': completedExercisesCount,
-          'volume': totalVolume,
-          'exerciseList': completedExercisesDetails,
-          'timestamp': FieldValue.serverTimestamp(),
-        });
       }
 
       if (mounted) {
@@ -530,7 +507,7 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                           ),
                           const SizedBox(width: 12),
                           GestureDetector(
-                            onTap: () => setState(() => _isPaused = !_isPaused),
+                            onTap: _togglePause,
                             child: Container(
                               padding: const EdgeInsets.all(10),
                               decoration: BoxDecoration(
@@ -569,7 +546,7 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
               ),
             ),
 
-            // --- LISTA DE EXERCÍCIOS ---
+            // --- LISTA DE EXERCÍCIOS TIPADA ---
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.all(24),
@@ -577,7 +554,6 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                   ..._activeExercises.asMap().entries.map((entry) {
                     final exIndex = entry.key;
                     final ex = entry.value;
-                    final sets = _setLogs[ex['id']] ?? [];
 
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 32),
@@ -588,7 +564,7 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Expanded(
-                                child: Text('${exIndex + 1}. ${ex['name']}',
+                                child: Text('${exIndex + 1}. ${ex.name}',
                                     style: const TextStyle(
                                         color: Colors.white,
                                         fontSize: 20,
@@ -597,14 +573,14 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                               IconButton(
                                 icon: const Icon(LucideIcons.trash2,
                                     color: Colors.redAccent, size: 20),
-                                onPressed: () => _removeExercise(ex['id']),
+                                onPressed: () => _removeExercise(ex.id),
                               ),
                             ],
                           ),
                           const SizedBox(height: 12),
-                          ...List.generate(sets.length, (setIndex) {
-                            final setLog = sets[setIndex];
-                            final isCompleted = setLog['completed'];
+                          ...List.generate(ex.sets.length, (setIndex) {
+                            final setLog = ex.sets[setIndex];
+                            final isCompleted = setLog.isCompleted;
 
                             return Container(
                               margin: const EdgeInsets.only(bottom: 8),
@@ -623,7 +599,7 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                               child: Row(
                                 children: [
                                   GestureDetector(
-                                    onTap: () => _toggleSet(ex['id'], setIndex),
+                                    onTap: () => _toggleSet(ex, setIndex),
                                     child: Container(
                                       width: 32,
                                       height: 32,
@@ -651,13 +627,15 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                                   const Spacer(),
                                   _buildMiniInput(
                                       'kg',
-                                      setLog['weight'].toString(),
-                                      (val) => setLog['weight'] = val),
+                                      setLog.weight.toString(),
+                                      (val) => setLog.weight =
+                                          int.tryParse(val) ?? 0),
                                   const SizedBox(width: 8),
                                   _buildMiniInput(
                                       'reps',
-                                      setLog['reps'].toString(),
-                                      (val) => setLog['reps'] = val),
+                                      setLog.reps.toString(),
+                                      (val) =>
+                                          setLog.reps = int.tryParse(val) ?? 0),
                                 ],
                               ),
                             );
@@ -722,7 +700,11 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                       children: [
                         GestureDetector(
                           onTap: () {
-                            if (_restTime > 15) setState(() => _restTime -= 15);
+                            if (_restTime > 15) {
+                              _restTargetTime = _restTargetTime
+                                  ?.subtract(const Duration(seconds: 15));
+                              setState(() => _restTime -= 15);
+                            }
                           },
                           child: const Icon(LucideIcons.minusSquare,
                               color: Colors.white54, size: 24),
@@ -736,7 +718,11 @@ class _ActiveWorkoutViewState extends State<ActiveWorkoutView> {
                                 fontFamily: 'monospace')),
                         const SizedBox(width: 12),
                         GestureDetector(
-                          onTap: () => setState(() => _restTime += 15),
+                          onTap: () {
+                            _restTargetTime = _restTargetTime
+                                ?.add(const Duration(seconds: 15));
+                            setState(() => _restTime += 15);
+                          },
                           child: const Icon(LucideIcons.plusSquare,
                               color: Colors.white54, size: 24),
                         ),

@@ -9,6 +9,9 @@ import 'firebase_options.dart';
 // Nossas Telas
 import 'views/onboarding_view.dart';
 import 'views/home_view.dart';
+import 'views/workouts_view.dart';
+import 'views/progress_view.dart';
+import 'views/profile_view.dart';
 
 void main() async {
   // Garante que o Flutter está pronto antes de chamar código nativo
@@ -97,6 +100,9 @@ class _MainNavigationState extends State<MainNavigation> {
 
   final List<Widget> _views = [
     const HomeView(),
+    const WorkoutsView(),
+    ProgressView(),
+    const ProfileView(),
     const Center(child: Text('Treinos', style: TextStyle(fontSize: 24))),
     const Center(child: Text('Progresso', style: TextStyle(fontSize: 24))),
     const Center(child: Text('Perfil', style: TextStyle(fontSize: 24))),

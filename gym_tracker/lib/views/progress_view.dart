@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class ProgressView extends StatefulWidget {
   const ProgressView({super.key});
@@ -12,432 +13,237 @@ class ProgressView extends StatefulWidget {
 }
 
 class _ProgressViewState extends State<ProgressView> {
-  List<Map<String, dynamic>> _history = [];
+  bool _isLoading = true;
+  List<dynamic> _workoutHistory = [];
+
+  // Estatísticas
   int _totalWorkouts = 0;
-  double _totalVolume = 0;
-  bool _isLoadingSync = false;
+  int _totalVolume = 0;
+  int _activeDaysThisMonth = 0; // Substitui a 'Streak' falha
+  int _workoutsThisWeek = 0;
 
   @override
   void initState() {
     super.initState();
-    _loadLocalHistory();
-    _syncWithFirebase();
+    _loadAndSyncData();
+  }
+
+  Future<void> _loadAndSyncData() async {
+    try {
+      setState(() => _isLoading = true);
+      await _loadLocalHistory();
+      await _syncWithFirebase();
+      _calculateStats();
+    } catch (e) {
+      debugPrint('Erro ao processar treinos antigos (limpando cache): $e');
+      // Limpa os dados corrompidos para não travar o aplicativo
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('workout_history');
+      _workoutHistory = [];
+    } finally {
+      // O finally garante que o ecrã destrava independentemente de erros
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
   Future<void> _loadLocalHistory() async {
     final prefs = await SharedPreferences.getInstance();
     final String? historyJson = prefs.getString('workout_history');
-
     if (historyJson != null) {
       try {
-        List<dynamic> decoded = jsonDecode(historyJson);
-        _updateStateWithHistory(List<Map<String, dynamic>>.from(decoded));
+        _workoutHistory = jsonDecode(historyJson);
       } catch (e) {
-        debugPrint('Erro ao ler cache: $e');
+        debugPrint('Erro ao descodificar histórico local: $e');
+        _workoutHistory = [];
       }
     }
   }
 
   Future<void> _syncWithFirebase() async {
-      setState(() => _isLoadingSync = true);
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        final String userEmail = prefs.getString('userEmail') ?? '';
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return; // Só sincroniza se estiver logado
 
-        // Só procura se tiver e-mail configurado
-        if (userEmail.isEmpty) return;
+      final snapshot = await FirebaseFirestore.instance
+          .collection('workout_history')
+          .where('userUid', isEqualTo: user.uid)
+          .get();
 
-        // Puxa só os treinos DO SEU EMAIL
-        final snapshot = await FirebaseFirestore.instance
-            .collection('workout_history')
-            .where('userEmail', isEqualTo: userEmail)
-            .get();
+      if (snapshot.docs.isNotEmpty) {
+        // Mapeia os IDs locais para não duplicar nem apagar o que não subiu
+        Set<String> localIds = _workoutHistory
+            .map((w) => w['id']?.toString() ?? '')
+            .where((id) => id.isNotEmpty)
+            .toSet();
 
-        if (snapshot.docs.isNotEmpty) {
-          var docs = snapshot.docs;
-          
-          // Ordena do mais recente para o mais antigo localmente
-          docs.sort((a, b) {
-            Timestamp? tA = a.data()['timestamp'] as Timestamp?;
-            Timestamp? tB = b.data()['timestamp'] as Timestamp?;
-            if (tA == null || tB == null) return 0;
-            return tB.compareTo(tA);
+        bool hasNewData = false;
+
+        for (var doc in snapshot.docs) {
+          final data = doc.data();
+          final String id = data['id']?.toString() ?? doc.id;
+
+          if (!localIds.contains(id)) {
+            _workoutHistory.add(data);
+            hasNewData = true;
+          }
+        }
+
+        if (hasNewData) {
+          // Ordena cronologicamente do mais recente para o mais antigo usando ISO 8601
+          _workoutHistory.sort((a, b) {
+            final dateA = DateTime.tryParse(a['dateIso']?.toString() ?? '') ??
+                DateTime.fromMillisecondsSinceEpoch(0);
+            final dateB = DateTime.tryParse(b['dateIso']?.toString() ?? '') ??
+                DateTime.fromMillisecondsSinceEpoch(0);
+            return dateB.compareTo(dateA);
           });
 
-          List<Map<String, dynamic>> cloudHistory = docs.map((doc) {
-            final data = doc.data();
-            return {
-              'date': data['date'] ?? '',
-              'name': data['name'] ?? 'Treino',
-              'exercises': data['exercises'] ?? 0,
-              'volume': data['volume']?.toString() ?? '0',
-              'exerciseList': data['exerciseList'] ?? [], 
-            };
-          }).toList();
-
-          _updateStateWithHistory(cloudHistory);
-          await prefs.setString('workout_history', jsonEncode(cloudHistory));
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('workout_history', jsonEncode(_workoutHistory));
         }
-      } catch (e) {
-        debugPrint('Sincronização falhou: $e');
-      } finally {
-        if (mounted) setState(() => _isLoadingSync = false);
+      }
+    } catch (e) {
+      debugPrint('Erro no sync com Firebase: $e');
+    }
+  }
+
+  void _calculateStats() {
+    _totalWorkouts = _workoutHistory.length;
+    _totalVolume = 0;
+    _workoutsThisWeek = 0;
+    _activeDaysThisMonth = 0;
+
+    final now = DateTime.now();
+    final startOfWeek = now.subtract(Duration(days: now.weekday - 1));
+    final startOfMonth = DateTime(now.year, now.month, 1);
+
+    Set<String> uniqueDaysThisMonth = {};
+
+    for (var workout in _workoutHistory) {
+      // Verificações de segurança para ignorar históricos de versões antigas do app
+      if (workout is! Map<String, dynamic>) continue;
+
+      if (workout['exercises'] is List) {
+        for (var ex in workout['exercises']) {
+          if (ex is Map<String, dynamic> && ex['sets'] is List) {
+            for (var set in ex['sets']) {
+              if (set is Map<String, dynamic> &&
+                  (set['isCompleted'] == true ||
+                      set['isCompleted'] == 'true')) {
+                int weight = int.tryParse(set['weight'].toString()) ?? 0;
+                int reps = int.tryParse(set['reps'].toString()) ?? 0;
+                _totalVolume += (weight * reps);
+              }
+            }
+          }
+        }
+      }
+
+      DateTime? workoutDate =
+          DateTime.tryParse(workout['dateIso']?.toString() ?? '');
+
+      if (workoutDate != null) {
+        if (workoutDate
+            .isAfter(startOfWeek.subtract(const Duration(days: 1)))) {
+          _workoutsThisWeek++;
+        }
+        if (workoutDate
+            .isAfter(startOfMonth.subtract(const Duration(days: 1)))) {
+          uniqueDaysThisMonth.add(
+              '${workoutDate.year}-${workoutDate.month}-${workoutDate.day}');
+        }
       }
     }
 
-  void _updateStateWithHistory(List<Map<String, dynamic>> historyData) {
-    int count = historyData.length;
-    double volume = 0;
-
-    for (var item in historyData) {
-      volume += double.tryParse(item['volume'].toString()) ?? 0;
-    }
-
-    if (mounted) {
-      setState(() {
-        _history = historyData;
-        _totalWorkouts = count;
-        _totalVolume = volume;
-      });
-    }
+    _activeDaysThisMonth = uniqueDaysThisMonth.length;
   }
 
-  String _formatVolume(double volume) {
-    if (volume >= 1000) {
-      return '${(volume / 1000).toStringAsFixed(1)}k';
-    }
-    return volume.toStringAsFixed(0);
-  }
+  // Formata a data ISO para exibição amigável ("17 de Set, 14:30")
+  String _formatDate(String? dateIso) {
+    if (dateIso == null) return 'Data desconhecida';
+    final date = DateTime.tryParse(dateIso);
+    if (date == null) return dateIso; // Fallback se ainda for o formato antigo
 
-  String _formatSeconds(int seconds) {
-    if (seconds <= 0) return '0s';
-    int m = seconds ~/ 60;
-    int s = seconds % 60;
-    if (m == 0) return '${s}s';
-    return '${m}m ${s}s';
-  }
-
-  void _showWorkoutDetails(Map<String, dynamic> workout) {
-    List<dynamic> exList = workout['exerciseList'] ?? [];
-
-    showModalBottomSheet(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: const Color(0xFF1c1c1e),
-        shape: const RoundedRectangleBorder(
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-        builder: (context) {
-          return SafeArea(
-            child: Container(
-              constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(context).size.height * 0.85),
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Container(
-                        width: 40,
-                        height: 4,
-                        decoration: BoxDecoration(
-                            color: Colors.white24,
-                            borderRadius: BorderRadius.circular(2))),
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                            color: const Color(0xFF22c55e).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(16)),
-                        child: const Icon(LucideIcons.calendarCheck,
-                            color: Color(0xFF22c55e), size: 28),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(workout['name'] ?? 'Treino',
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold)),
-                            Text('Realizado a ${workout['date']}',
-                                style: const TextStyle(
-                                    color: Colors.grey, fontSize: 14)),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    children: [
-                      _buildDetailMiniCard(LucideIcons.dumbbell, 'Exercícios',
-                          '${workout['exercises']} concluídos'),
-                      const SizedBox(width: 12),
-                      _buildDetailMiniCard(LucideIcons.barChart2, 'Volume',
-                          '${workout['volume']} kg'),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  const Text('Lista de Exercícios',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16)),
-                  const SizedBox(height: 12),
-                  Flexible(
-                    child: exList.isEmpty
-                        ? Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                                color: const Color(0xFF0a0a0a),
-                                borderRadius: BorderRadius.circular(16)),
-                            child: const Text(
-                              'Os detalhes das séries ficarão disponíveis para os novos treinos gerados a partir de agora.',
-                              style: TextStyle(
-                                  color: Colors.grey,
-                                  fontSize: 12,
-                                  height: 1.5),
-                              textAlign: TextAlign.center,
-                            ),
-                          )
-                        : ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: exList.length,
-                            itemBuilder: (context, index) {
-                              final ex = exList[index];
-                              final setsDetail = ex['sets_detail'] ?? [];
-                              final duration = ex['duration_seconds'] ?? 0;
-
-                              return Card(
-                                color: const Color(0xFF0a0a0a),
-                                margin: const EdgeInsets.only(bottom: 8),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(16)),
-                                child: Theme(
-                                  data: Theme.of(context).copyWith(
-                                      dividerColor: Colors.transparent),
-                                  child: ExpansionTile(
-                                    iconColor: const Color(0xFF22c55e),
-                                    collapsedIconColor: Colors.grey,
-                                    title: Text(ex['name'] ?? 'Exercício',
-                                        style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold)),
-                                    subtitle: Text(
-                                        '${ex['sets_completed']} séries • ${ex['volume']} kg',
-                                        style: const TextStyle(
-                                            color: Colors.grey, fontSize: 12)),
-                                    children: [
-                                      ...List.generate(setsDetail.length, (i) {
-                                        var s = setsDetail[i];
-                                        return Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 16, vertical: 6),
-                                          child: Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.spaceBetween,
-                                            children: [
-                                              Text('Série ${i + 1}',
-                                                  style: const TextStyle(
-                                                      color: Colors.grey,
-                                                      fontWeight:
-                                                          FontWeight.bold)),
-                                              Text(
-                                                  '${s['weight']} kg  x  ${s['reps']} reps',
-                                                  style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontWeight:
-                                                          FontWeight.bold)),
-                                            ],
-                                          ),
-                                        );
-                                      }),
-                                      if (duration > 0)
-                                        Padding(
-                                          padding: const EdgeInsets.all(16),
-                                          child: Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.center,
-                                            children: [
-                                              const Icon(LucideIcons.clock,
-                                                  color: Color(0xFF22c55e),
-                                                  size: 16),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                  'Tempo gasto: ${_formatSeconds(duration)}',
-                                                  style: const TextStyle(
-                                                      color: Color(0xFF22c55e),
-                                                      fontSize: 12,
-                                                      fontWeight:
-                                                          FontWeight.bold)),
-                                            ],
-                                          ),
-                                        ),
-                                      const SizedBox(height: 8),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () => Navigator.pop(context),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF22c55e),
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16)),
-                      ),
-                      child: const Text('FECHAR',
-                          style: TextStyle(
-                              color: Colors.black,
-                              fontWeight: FontWeight.bold)),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        });
-  }
-
-  Widget _buildDetailMiniCard(IconData icon, String title, String value) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-            color: const Color(0xFF0a0a0a),
-            borderRadius: BorderRadius.circular(16)),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: Colors.grey, size: 20),
-            const SizedBox(height: 12),
-            Text(value,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16)),
-            Text(title,
-                style: const TextStyle(color: Colors.grey, fontSize: 12)),
-          ],
-        ),
-      ),
-    );
+    final months = [
+      'Jan',
+      'Fev',
+      'Mar',
+      'Abr',
+      'Mai',
+      'Jun',
+      'Jul',
+      'Ago',
+      'Set',
+      'Out',
+      'Nov',
+      'Dez'
+    ];
+    return '${date.day.toString().padLeft(2, '0')} de ${months[date.month - 1]}, ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Center(
+          child: CircularProgressIndicator(color: Color(0xFF22c55e)));
+    }
+
     return SafeArea(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const Padding(
+            padding: EdgeInsets.all(24.0),
+            child: Text('Progresso',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 32,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -1)),
+          ),
+
+          // --- ESTATÍSTICAS ---
           Padding(
-            padding: const EdgeInsets.fromLTRB(24, 40, 24, 24),
+            padding: const EdgeInsets.symmetric(horizontal: 24.0),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('O seu Progresso',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 32,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: -1)),
-                if (_isLoadingSync)
-                  const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                          color: Color(0xFF22c55e), strokeWidth: 2)),
+                Expanded(
+                    child: _buildStatCard('Treinos', _totalWorkouts.toString(),
+                        LucideIcons.activity)),
+                const SizedBox(width: 16),
+                Expanded(
+                    child: _buildStatCard('Dias no Mês',
+                        _activeDaysThisMonth.toString(), LucideIcons.flame,
+                        color: Colors.orange)),
               ],
             ),
           ),
+          const SizedBox(height: 16),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1c1c1e),
-                        borderRadius: BorderRadius.circular(24),
-                        border:
-                            Border.all(color: Colors.white.withOpacity(0.05)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(LucideIcons.checkCircle2,
-                              color: Color(0xFF22c55e), size: 32),
-                          const Spacer(),
-                          const SizedBox(height: 16),
-                          Text('$_totalWorkouts',
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 36,
-                                  fontWeight: FontWeight.bold)),
-                          const Text('Treinos\nConcluídos',
-                              style: TextStyle(
-                                  color: Colors.grey,
-                                  fontSize: 14,
-                                  height: 1.2)),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1c1c1e),
-                        borderRadius: BorderRadius.circular(24),
-                        border:
-                            Border.all(color: Colors.white.withOpacity(0.05)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(LucideIcons.dumbbell,
-                              color: Colors.orangeAccent, size: 32),
-                          const Spacer(),
-                          const SizedBox(height: 16),
-                          Text(_formatVolume(_totalVolume),
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 36,
-                                  fontWeight: FontWeight.bold)),
-                          const Text('Volume Total (kg)',
-                              style: TextStyle(
-                                  color: Colors.grey,
-                                  fontSize: 14,
-                                  height: 1.2)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+            padding: const EdgeInsets.symmetric(horizontal: 24.0),
+            child: Row(
+              children: [
+                Expanded(
+                    child: _buildStatCard(
+                        'Carga Total',
+                        '${(_totalVolume / 1000).toStringAsFixed(1)}t',
+                        LucideIcons.dumbbell,
+                        color: Colors.blueAccent)),
+                const SizedBox(width: 16),
+                Expanded(
+                    child: _buildStatCard('Esta Semana',
+                        _workoutsThisWeek.toString(), LucideIcons.calendarCheck,
+                        color: Colors.purpleAccent)),
+              ],
             ),
           ),
+
           const SizedBox(height: 32),
           const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 24),
-            child: Text('HISTÓRICO RECENTE',
+            padding: EdgeInsets.symmetric(horizontal: 24.0),
+            child: Text('HISTÓRICO',
                 style: TextStyle(
                     color: Colors.grey,
                     fontSize: 10,
@@ -445,92 +251,118 @@ class _ProgressViewState extends State<ProgressView> {
                     letterSpacing: 1.5)),
           ),
           const SizedBox(height: 16),
-          Expanded(
-            child: _history.isEmpty
-                ? const Center(
-                    child: Text('Ainda não tem treinos concluídos.',
-                        style: TextStyle(color: Colors.grey)))
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 100),
-                    itemCount: _history.length,
-                    itemBuilder: (context, index) {
-                      final item = _history[index];
 
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            onTap: () => _showWorkoutDetails(item),
-                            borderRadius: BorderRadius.circular(24),
-                            highlightColor:
-                                const Color(0xFF22c55e).withOpacity(0.1),
-                            splashColor:
-                                const Color(0xFF22c55e).withOpacity(0.2),
-                            child: Container(
-                              padding: const EdgeInsets.all(20),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF1c1c1e),
-                                borderRadius: BorderRadius.circular(24),
-                                border: Border.all(
-                                    color: Colors.white.withOpacity(0.05)),
-                              ),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                        color: const Color(0xFF0a0a0a),
-                                        borderRadius:
-                                            BorderRadius.circular(16)),
-                                    child: const Icon(LucideIcons.calendar,
-                                        color: Color(0xFF22c55e), size: 20),
+          // --- LISTA DE TREINOS ---
+          Expanded(
+            child: _workoutHistory.isEmpty
+                ? const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(LucideIcons.history,
+                            color: Colors.white24, size: 48),
+                        SizedBox(height: 16),
+                        Text('Nenhum treino registado ainda.',
+                            style: TextStyle(color: Colors.white54)),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    itemCount: _workoutHistory.length,
+                    itemBuilder: (context, index) {
+                      final workout = _workoutHistory[index];
+                      final int exCount = (workout['exercises'] is List) ? (workout['exercises'] as List).length : 0;
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 16),
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1c1c1e),
+                          borderRadius: BorderRadius.circular(20),
+                          border:
+                              Border.all(color: Colors.white.withOpacity(0.05)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    workout['name'] ?? 'Treino',
+                                    style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold),
                                   ),
-                                  const SizedBox(width: 16),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(item['name'],
-                                            style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.bold)),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                            '${item['date']} • ${item['exercises']} exercícios',
-                                            style: const TextStyle(
-                                                color: Colors.grey,
-                                                fontSize: 12)),
-                                      ],
-                                    ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF22c55e)
+                                        .withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8),
                                   ),
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      const Text('Volume',
-                                          style: TextStyle(
-                                              color: Colors.grey,
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.bold)),
-                                      const SizedBox(height: 4),
-                                      Text('${item['volume']} kg',
-                                          style: const TextStyle(
-                                              color: Color(0xFF22c55e),
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.bold)),
-                                    ],
+                                  child: Text(
+                                    _formatDate(workout['dateIso']),
+                                    style: const TextStyle(
+                                        color: Color(0xFF22c55e),
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold),
                                   ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
-                          ),
+                            const SizedBox(height: 16),
+                            Row(
+                              children: [
+                                const Icon(LucideIcons.dumbbell,
+                                    color: Colors.grey, size: 16),
+                                const SizedBox(width: 8),
+                                Text('$exCount exercícios concluídos',
+                                    style: const TextStyle(
+                                        color: Colors.white70, fontSize: 14)),
+                              ],
+                            ),
+                          ],
                         ),
                       );
                     },
                   ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatCard(String title, String value, IconData icon,
+      {Color color = const Color(0xFF22c55e)}) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1c1c1e),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withOpacity(0.05)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 24),
+          const SizedBox(height: 16),
+          Text(value,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900)),
+          const SizedBox(height: 4),
+          Text(title,
+              style: const TextStyle(
+                  color: Colors.grey,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold)),
         ],
       ),
     );

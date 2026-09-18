@@ -1,60 +1,86 @@
 import 'dart:convert';
-import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AiWorkoutService {
+  // <-- O nome exato que as suas telas procuram!
   static Future<List<Map<String, dynamic>>> generateWorkout(
-      String muscleGroup) async {
+      String focusDay) async {
     final prefs = await SharedPreferences.getInstance();
 
-    // Busca os dados exatos que você salvou na tela de Perfil
     final apiKey = prefs.getString('apiKey') ?? '';
-    final modelName = prefs.getString('geminiModel') ?? 'gemini-3.8-flash';
+    final model = prefs.getString('geminiModel') ?? 'gemini-1.5-flash';
 
-    if (apiKey.trim().isEmpty) {
+    if (apiKey.isEmpty) {
       throw Exception(
-          'Chave da API não configurada. Vá ao Perfil e adicione a sua chave.');
+          'Chave da API Gemini não encontrada. Vá ao seu Perfil e configure a chave.');
     }
 
-    final model = GenerativeModel(
-      model: modelName,
-      apiKey: apiKey,
-    );
+    final age = prefs.getString('userAge') ?? 'Desconhecido';
+    final weight = prefs.getString('userWeight') ?? 'Desconhecido';
+    final goal = prefs.getString('userGoal') ?? 'Hipertrofia';
 
     final prompt = '''
-    Atue como um personal trainer especialista em hipertrofia.
-    Crie um treino focado no seguinte grupo muscular: $muscleGroup.
-    Dê preferência a exercícios realizados em máquinas.
+    Atue como um Personal Trainer de elite.
     
-    RETORNE APENAS UM JSON VÁLIDO contendo um array de exercícios. Não inclua textos, saudações ou marcações de markdown (como ```json).
+    Perfil do meu aluno:
+    - Idade: $age anos
+    - Peso: $weight kg
+    - Objetivo Principal: $goal
     
-    Siga ESTE formato exato:
+    Gere um treino excelente focado em: $focusDay.
+    Ajuste o volume, as repetições e as cargas estimadas (em kg) com base no objetivo de $goal.
+    
+    RETORNE APENAS UM ARRAY JSON VÁLIDO. NÃO USE formatação markdown (```json).
+    O formato exato obrigatório é:
     [
       {
-        "id": "ex_1",
+        "id": "1",
         "name": "Nome do Exercício",
-        "sets": "4",
-        "reps": "10-12",
-        "load": 0
+        "sets": 4,
+        "reps": "8-12",
+        "load": 20
       }
     ]
     ''';
 
-    final response = await model.generateContent([Content.text(prompt)]);
-    String responseText = response.text?.trim() ?? '[]';
-
-    // Limpeza de segurança caso a IA envie marcações Markdown
-    if (responseText.startsWith('```')) {
-      responseText = responseText.replaceAll(RegExp(r'^```json\n?'), '');
-      responseText = responseText.replaceAll(RegExp(r'^```\n?'), '');
-      responseText = responseText.replaceAll(RegExp(r'```$'), '');
-    }
+    final url = Uri.parse(
+        '[https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey](https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey)');
 
     try {
-      List<dynamic> parsedJson = jsonDecode(responseText.trim());
-      return List<Map<String, dynamic>>.from(parsedJson);
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          "contents": [
+            {
+              "parts": [
+                {"text": prompt}
+              ]
+            }
+          ],
+          "generationConfig": {
+            "temperature": 0.7,
+          }
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        String rawText = data['candidates'][0]['content']['parts'][0]['text'];
+
+        rawText =
+            rawText.replaceAll('```json', '').replaceAll('```', '').trim();
+
+        final List<dynamic> jsonList = jsonDecode(rawText);
+
+        return jsonList.map((e) => Map<String, dynamic>.from(e)).toList();
+      } else {
+        throw Exception(
+            'Erro na API Gemini: ${response.statusCode}\n${response.body}');
+      }
     } catch (e) {
-      throw Exception('A IA gerou um formato inválido. Tente novamente.');
+      throw Exception('Falha ao gerar treino: $e');
     }
   }
 }

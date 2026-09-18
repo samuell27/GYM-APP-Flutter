@@ -41,6 +41,7 @@ dependencies:
   lucide_icons_flutter: ^3.1.19
   flutter_ringtone_player: ^4.0.0+4
   google_generative_ai: ^0.4.7
+  firebase_auth: ^6.4.0
 
 dev_dependencies:
   flutter_test:
