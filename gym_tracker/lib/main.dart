@@ -1,27 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-// Importações do Firebase
 import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-// Nossas Telas
-import 'views/onboarding_view.dart';
+// Importações das suas views
 import 'views/home_view.dart';
 import 'views/workouts_view.dart';
 import 'views/progress_view.dart';
 import 'views/profile_view.dart';
+import 'firebase_options.dart';
 
 void main() async {
-  // Garante que o Flutter está pronto antes de chamar código nativo
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Inicia a ligação com o Firebase
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-
   runApp(const GymTrackerApp());
 }
 
@@ -35,96 +28,114 @@ class GymTrackerApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
+        primaryColor: const Color(0xFF22c55e),
         scaffoldBackgroundColor: const Color(0xFF0a0a0a),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF22c55e),
-          surface: Color(0xFF1c1c1e),
+        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+          backgroundColor: Color(0xFF1c1c1e),
+          selectedItemColor: Color(0xFF22c55e),
+          unselectedItemColor: Colors.grey,
         ),
       ),
-      home: const AuthWrapper(),
+      // StreamBuilder para detetar mudanças de sessão (Login / Logout)
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(
+              body: Center(
+                child: CircularProgressIndicator(color: Color(0xFF22c55e)),
+              ),
+            );
+          }
+          
+          if (snapshot.hasData) {
+            // Utilizador autenticado: Mostra a aplicação principal
+            return const MainNavigator();
+          }
+          
+          // Utilizador não autenticado: Aqui chamaria a sua tela de Login ou Onboarding.
+          // Se tiver uma OnboardingView(), basta colocar aqui em vez deste Scaffold.
+          return const Scaffold(
+            body: Center(
+              child: Text('Sessão terminada. Por favor, inicie sessão novamente.', style: TextStyle(color: Colors.white)),
+            ),
+          );
+        },
+      ),
     );
   }
 }
 
-// Controla se mostra o Onboarding ou o App Principal
-class AuthWrapper extends StatefulWidget {
-  const AuthWrapper({super.key});
+class MainNavigator extends StatefulWidget {
+  const MainNavigator({super.key});
 
   @override
-  State<AuthWrapper> createState() => _AuthWrapperState();
+  State<MainNavigator> createState() => _MainNavigatorState();
 }
 
-class _AuthWrapperState extends State<AuthWrapper> {
-  bool _isLoading = true;
-  bool _isNewUser = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _checkFirstLaunch();
-  }
-
-  Future<void> _checkFirstLaunch() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _isNewUser = prefs.getBool('isNewUser') ?? true;
-      _isLoading = false;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator(color: Color(0xFF22c55e))));
-    }
-
-    if (_isNewUser) {
-      return OnboardingView(
-        onFinish: () => setState(() => _isNewUser = false),
-      );
-    }
-
-    return const MainNavigation();
-  }
-}
-
-class MainNavigation extends StatefulWidget {
-  const MainNavigation({super.key});
-
-  @override
-  State<MainNavigation> createState() => _MainNavigationState();
-}
-
-class _MainNavigationState extends State<MainNavigation> {
+class _MainNavigatorState extends State<MainNavigator> {
   int _currentIndex = 0;
 
+  // Lista de ecrãs. Note que a ProgressView não tem 'const' devido à forma como a construímos.
   final List<Widget> _views = [
     const HomeView(),
     const WorkoutsView(),
-    ProgressView(),
+    const ProgressView(), 
     const ProfileView(),
-    const Center(child: Text('Treinos', style: TextStyle(fontSize: 24))),
-    const Center(child: Text('Progresso', style: TextStyle(fontSize: 24))),
-    const Center(child: Text('Perfil', style: TextStyle(fontSize: 24))),
   ];
 
-@override
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _views[_currentIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
-        backgroundColor: const Color(0xFF0a0a0a),
-        type: BottomNavigationBarType.fixed,
-        selectedItemColor: const Color(0xFF22c55e),
-        unselectedItemColor: Colors.grey.shade600,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(LucideIcons.home), label: 'Início'),
-          BottomNavigationBarItem(icon: Icon(LucideIcons.dumbbell), label: 'Treinos'),
-          BottomNavigationBarItem(icon: Icon(LucideIcons.barChart2), label: 'Progresso'),
-          BottomNavigationBarItem(icon: Icon(LucideIcons.user), label: 'Perfil'),
-        ],
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 400),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (Widget child, Animation<double> animation) {
+          // Transição premium combinando Fade e Slide
+          return FadeTransition(
+            opacity: animation,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0.0, 0.05), // Começa ligeiramente abaixo
+                end: Offset.zero, // Termina na posição original
+              ).animate(animation),
+              child: child,
+            ),
+          );
+        },
+        child: Container(
+          // O ValueKey é obrigatório para o Flutter detetar a troca e animar
+          key: ValueKey<int>(_currentIndex), 
+          child: _views[_currentIndex],
+        ),
+      ),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: Colors.white.withOpacity(0.05), width: 1)),
+        ),
+        child: BottomNavigationBar(
+          currentIndex: _currentIndex,
+          onTap: (index) {
+            // Apenas aciona a reconstrução se estiver a mudar para um separador diferente
+            if (_currentIndex != index) {
+              setState(() => _currentIndex = index);
+            }
+          },
+          backgroundColor: const Color(0xFF1c1c1e),
+          type: BottomNavigationBarType.fixed,
+          selectedItemColor: const Color(0xFF22c55e),
+          unselectedItemColor: Colors.grey,
+          showSelectedLabels: true,
+          showUnselectedLabels: false,
+          elevation: 0,
+          items: const [
+            BottomNavigationBarItem(icon: Icon(LucideIcons.home), label: 'Início'),
+            BottomNavigationBarItem(icon: Icon(LucideIcons.dumbbell), label: 'Treinos'),
+            BottomNavigationBarItem(icon: Icon(LucideIcons.barChart2), label: 'Progresso'),
+            BottomNavigationBarItem(icon: Icon(LucideIcons.user), label: 'Perfil'),
+          ],
+        ),
       ),
     );
   }
