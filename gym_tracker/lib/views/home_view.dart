@@ -2,8 +2,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../services/ai_service.dart';
-import 'active_workout_view.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'ai_generation_view.dart'; 
+import 'active_workout_view.dart'; // <-- Adicionado para o atalho de treino
 
 class HomeView extends StatefulWidget {
   const HomeView({super.key});
@@ -13,532 +15,345 @@ class HomeView extends StatefulWidget {
 }
 
 class _HomeViewState extends State<HomeView> {
-  String _userName = 'Utilizador';
-  String _userGoal = 'Geral';
-  String _greeting = 'Olá';
-
-  // Variáveis Dinâmicas
-  final List<String> _daysOfWeek = [
-    'Seg',
-    'Ter',
-    'Qua',
-    'Qui',
-    'Sex',
-    'Sáb',
-    'Dom'
-  ];
-  String _todayStr = 'Seg';
-  int _todayExerciseCount = 0;
-  List<Map<String, dynamic>> _todayExercisesList = [];
-
+  bool _isLoading = true;
+  String _userName = 'Atleta';
+  String _userGoal = 'HIPERTROFIA';
+  
   int _totalWorkouts = 0;
-  int _weeklyWorkouts = 0;
+  int _workoutsThisWeek = 0;
   int _streak = 0;
-  Set<String> _activeDaysThisWeek = {};
+  
+  // Array fixo de Segunda a Domingo
+  final List<String> _daysOfWeek = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+  List<bool> _weekActivity = List.filled(7, false);
+  
+  String _todayDayStr = '';
+  bool _hasWorkoutToday = false;
+  List<Map<String, dynamic>> _todayExercises = []; // <-- Guarda os exercícios de hoje
 
   @override
   void initState() {
     super.initState();
-    _calculateGreeting();
+    _todayDayStr = _daysOfWeek[DateTime.now().weekday - 1];
     _loadData();
   }
 
-  void _calculateGreeting() {
-    final hour = DateTime.now().hour;
-    if (hour < 12) {
-      _greeting = 'Bom dia';
-    } else if (hour < 19) {
-      _greeting = 'Boa tarde';
-    } else {
-      _greeting = 'Boa noite';
-    }
-  }
-
   Future<void> _loadData() async {
+    final user = FirebaseAuth.instance.currentUser;
+    final uid = user?.uid ?? 'default';
     final prefs = await SharedPreferences.getInstance();
-    DateTime now = DateTime.now();
-    _todayStr =
-        _daysOfWeek[now.weekday - 1]; // weekday vai de 1 (Seg) a 7 (Dom)
 
-    // 1. Carregar Perfil
-    setState(() {
-      _userName = prefs.getString('userName') ?? 'Utilizador';
-      _userGoal = prefs.getString('userGoal') ?? 'Geral';
-      if (_userName.trim().isEmpty) _userName = 'Utilizador';
-    });
-
-    // 2. Carregar o Treino de Hoje
-    final String? savedWorkouts = prefs.getString('gym_workouts');
-    if (savedWorkouts != null) {
-      final Map<String, dynamic> decodedWorkouts = jsonDecode(savedWorkouts);
-      if (decodedWorkouts[_todayStr] != null) {
-        setState(() {
-          _todayExercisesList =
-              List<Map<String, dynamic>>.from(decodedWorkouts[_todayStr]);
-          _todayExerciseCount = _todayExercisesList.length;
-        });
+    // --- BUSCA O NOME ---
+    String? finalName = prefs.getString('userName') ?? prefs.getString('name');
+    if (finalName == null || finalName.trim().isEmpty) {
+      if (user != null && user.displayName != null && user.displayName!.trim().isNotEmpty) {
+        finalName = user.displayName;
       }
     }
+    if ((finalName == null || finalName.trim().isEmpty) && user != null) {
+      try {
+        final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+        if (doc.exists && doc.data()!.containsKey('name')) {
+          finalName = doc.data()!['name'];
+          await prefs.setString('userName', finalName!);
+        }
+      } catch (e) {
+        debugPrint('Erro Firestore: $e');
+      }
+    }
+    if (finalName == null || finalName.trim().isEmpty) {
+      finalName = user?.email?.split('@').first ?? 'Atleta';
+    }
 
-    // 3. Carregar Histórico e Calcular Estatísticas
-    final String? historyJson = prefs.getString('workout_history');
+    _userName = finalName;
+    _userGoal = prefs.getString('userGoal') ?? 'HIPERTROFIA';
+
+    // --- CARREGA O HISTÓRICO ISOLADO ---
+    final String? historyJson = prefs.getString('workout_history_$uid');
     if (historyJson != null) {
-      List<dynamic> history = jsonDecode(historyJson);
-      _calculateStats(history, now);
-    }
-  }
-
-  void _calculateStats(List<dynamic> history, DateTime now) {
-    int currentStreak = 0;
-    int weekCount = 0;
-    Set<String> activeDays = {};
-
-    // Extrai todas as datas do histórico para um Set (mais rápido para pesquisar)
-    Set<String> historyDates = history.map((w) => w['date'].toString()).toSet();
-
-    // Calcula Início da Semana (Segunda-feira)
-    DateTime startOfWeek = now.subtract(Duration(days: now.weekday - 1));
-
-    // Verifica a atividade desta semana (para as bolinhas e o contador)
-    for (int i = 0; i < 7; i++) {
-      DateTime day = startOfWeek.add(Duration(days: i));
-      String dateStr =
-          '${day.day.toString().padLeft(2, '0')}/${day.month.toString().padLeft(2, '0')}';
-      if (historyDates.contains(dateStr)) {
-        activeDays.add(_daysOfWeek[i]);
-        weekCount++;
+      try {
+        List<dynamic> history = jsonDecode(historyJson);
+        _calculateStats(history);
+      } catch (e) {
+        debugPrint('Erro ao decodificar histórico: $e');
       }
     }
 
-    // Calcula a Sequência (Streak) olhando para os dias anteriores
-    DateTime checkDate = now;
-    while (true) {
-      String checkStr =
-          '${checkDate.day.toString().padLeft(2, '0')}/${checkDate.month.toString().padLeft(2, '0')}';
-      if (historyDates.contains(checkStr)) {
-        currentStreak++;
-        checkDate = checkDate.subtract(const Duration(days: 1)); // recua 1 dia
-      } else {
-        // Se não treinou hoje, mas treinou ontem, a streak ainda não quebrou
-        if (currentStreak == 0 && checkDate.day == now.day) {
-          checkDate = checkDate.subtract(const Duration(days: 1));
-          String yesterdayStr =
-              '${checkDate.day.toString().padLeft(2, '0')}/${checkDate.month.toString().padLeft(2, '0')}';
-          if (historyDates.contains(yesterdayStr)) {
-            currentStreak++;
-            checkDate = checkDate.subtract(const Duration(days: 1));
-            continue;
+    // --- VERIFICA O TREINO DE HOJE ---
+    final String? workoutsJson = prefs.getString('gym_workouts_$uid');
+    if (workoutsJson != null) {
+      try {
+        Map<String, dynamic> plans = jsonDecode(workoutsJson);
+        if (plans.containsKey(_todayDayStr) && plans[_todayDayStr] is List) {
+          final dailyPlan = plans[_todayDayStr] as List;
+          _hasWorkoutToday = dailyPlan.isNotEmpty;
+          
+          if (_hasWorkoutToday) {
+            // Guarda a lista de exercícios para enviar para o atalho
+            _todayExercises = List<Map<String, dynamic>>.from(dailyPlan);
           }
         }
-        break; // Quebrou a sequência
+      } catch (e) {
+        debugPrint('Erro ao ler plano de hoje: $e');
+      }
+    }
+    
+    if (mounted) setState(() => _isLoading = false);
+  }
+
+  void _calculateStats(List<dynamic> history) {
+    _totalWorkouts = history.length;
+    _workoutsThisWeek = 0;
+    
+    Set<String> historyDates = history.map((w) {
+      if (w is Map && w['dateIso'] != null) {
+        final d = DateTime.tryParse(w['dateIso'].toString());
+        if (d != null) return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      }
+      return '';
+    }).where((s) => s.isNotEmpty).toSet();
+
+    final now = DateTime.now();
+    
+    // 1. Calcula os dias da semana atual (Segunda a Domingo)
+    int currentWeekday = now.weekday; // 1 = Seg, 7 = Dom
+    DateTime monday = now.subtract(Duration(days: currentWeekday - 1));
+    
+    for (int i = 0; i < 7; i++) {
+      DateTime day = monday.add(Duration(days: i));
+      String dateStr = '${day.year}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
+      
+      if (historyDates.contains(dateStr)) {
+        _weekActivity[i] = true;
+        _workoutsThisWeek++;
+      } else {
+        _weekActivity[i] = false;
       }
     }
 
-    setState(() {
-      _totalWorkouts = history.length;
-      _weeklyWorkouts = weekCount;
-      _activeDaysThisWeek = activeDays;
-      _streak = currentStreak;
-    });
+    // 2. Calcula a Sequência (Streak)
+    int currentStreak = 0;
+    DateTime checkDate = now;
+    String checkDateStr = '${checkDate.year}-${checkDate.month.toString().padLeft(2, '0')}-${checkDate.day.toString().padLeft(2, '0')}';
+    
+    // Se não treinou hoje, começa a contar de ontem
+    if (!historyDates.contains(checkDateStr)) {
+      checkDate = checkDate.subtract(const Duration(days: 1));
+      checkDateStr = '${checkDate.year}-${checkDate.month.toString().padLeft(2, '0')}-${checkDate.day.toString().padLeft(2, '0')}';
+    }
+
+    while (historyDates.contains(checkDateStr)) {
+      currentStreak++;
+      checkDate = checkDate.subtract(const Duration(days: 1));
+      checkDateStr = '${checkDate.year}-${checkDate.month.toString().padLeft(2, '0')}-${checkDate.day.toString().padLeft(2, '0')}';
+    }
+    
+    _streak = currentStreak;
   }
 
-  // --- FUNÇÃO DO POPUP DA IA ---
-  Future<void> _showAiWorkoutDialog(BuildContext context) async {
-    TextEditingController muscleController = TextEditingController();
-    bool isLoading = false;
-
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return AlertDialog(
-              backgroundColor: const Color(0xFF1c1c1e),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(24)),
-              title: const Row(
-                children: [
-                  Icon(LucideIcons.bot, color: Color(0xFF22c55e)),
-                  SizedBox(width: 12),
-                  Text('Treino Inteligente',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 20)),
-                ],
-              ),
-              content: isLoading
-                  ? const SizedBox(
-                      height: 100,
-                      child: Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            CircularProgressIndicator(color: Color(0xFF22c55e)),
-                            SizedBox(height: 16),
-                            Text('A gerar série ideal...',
-                                style: TextStyle(
-                                    color: Colors.grey, fontSize: 12)),
-                          ],
-                        ),
-                      ),
-                    )
-                  : TextField(
-                      controller: muscleController,
-                      style: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold),
-                      decoration: InputDecoration(
-                        hintText: 'Ex: Peito, Costas, Pernas...',
-                        hintStyle: const TextStyle(color: Colors.white30),
-                        filled: true,
-                        fillColor: const Color(0xFF0a0a0a),
-                        border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none),
-                      ),
-                    ),
-              actions: isLoading
-                  ? []
-                  : [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('Cancelar',
-                            style: TextStyle(
-                                color: Colors.grey,
-                                fontWeight: FontWeight.bold)),
-                      ),
-                      ElevatedButton(
-                        onPressed: () async {
-                          if (muscleController.text.trim().isEmpty) return;
-
-                          setState(() => isLoading = true);
-
-                          try {
-                            final exercises =
-                                await AiWorkoutService.generateWorkout(
-                                    muscleController.text);
-
-                            if (!context.mounted) return;
-                            Navigator.pop(context); // Fecha o popup
-
-                            // Abre a tela de treino com o resultado
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => ActiveWorkoutView(
-                                  day:
-                                      'IA: ${muscleController.text.trim().toUpperCase()}',
-                                  exercises: exercises,
-                                ),
-                              ),
-                            ).then((_) =>
-                                _loadData()); // Atualiza estatísticas ao voltar
-                          } catch (e) {
-                            setState(() => isLoading = false);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                  content: Text(e.toString()),
-                                  backgroundColor: Colors.red),
-                            );
-                          }
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF22c55e),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                        ),
-                        child: const Text('Gerar',
-                            style: TextStyle(
-                                color: Colors.black,
-                                fontWeight: FontWeight.w900)),
-                      ),
-                    ],
-            );
-          },
-        );
-      },
-    );
+  String _getGreeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Bom dia';
+    if (hour < 18) return 'Boa tarde';
+    return 'Boa noite';
   }
 
   @override
   Widget build(BuildContext context) {
-    final String initial =
-        _userName.isNotEmpty ? _userName[0].toUpperCase() : 'U';
+    if (_isLoading) return const Center(child: CircularProgressIndicator(color: Color(0xFF22c55e)));
 
     return Scaffold(
-      backgroundColor: Colors
-          .transparent, // Mantém a cor de fundo integrada com as abas inferiores
+      backgroundColor: const Color(0xFF0a0a0a),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.only(
-              bottom: 100.0), // Espaço para o menu inferior
+          padding: const EdgeInsets.all(24.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // --- CABEÇALHO ---
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 40, 24, 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Column(
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('$_greeting, $_userName 👋',
-                            style: const TextStyle(
-                                color: Colors.grey,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600)),
+                        Text('${_getGreeting()}, ${_userName.split(' ').first} 👋', 
+                            style: const TextStyle(color: Colors.grey, fontSize: 16, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 4),
-                        const Text('Hora de treinar!',
-                            style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 28,
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: -0.5)),
+                        const Text('Hora de treinar!', 
+                            style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: -1)),
                       ],
                     ),
-                    CircleAvatar(
-                      radius: 24,
-                      backgroundColor: const Color(0xFF22c55e).withOpacity(0.2),
-                      child: Text(initial,
-                          style: const TextStyle(
-                              color: Color(0xFF22c55e),
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18)),
-                    ),
-                  ],
-                ),
+                  ),
+                  CircleAvatar(
+                    backgroundColor: const Color(0xFF14281d), // Verde muito escuro
+                    radius: 24,
+                    child: Text(_userName.isNotEmpty ? _userName[0].toUpperCase() : 'U', 
+                        style: const TextStyle(color: Color(0xFF22c55e), fontSize: 20, fontWeight: FontWeight.bold)),
+                  ),
+                ],
               ),
-
-              // --- ESTATÍSTICAS REAIS ---
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Row(
-                  children: [
-                    _buildStatCard(LucideIcons.flame, Colors.orange, '$_streak',
-                        'SEQUÊNCIA'),
-                    const SizedBox(width: 12),
-                    _buildStatCard(LucideIcons.zap, const Color(0xFF22c55e),
-                        '$_weeklyWorkouts', 'ESTA SEM.'),
-                    const SizedBox(width: 12),
-                    _buildStatCard(LucideIcons.trophy, Colors.amber,
-                        '$_totalWorkouts', 'TOTAL'),
-                  ],
-                ),
+              const SizedBox(height: 32),
+              
+              // --- ESTATÍSTICAS (3 CARDS) ---
+              Row(
+                children: [
+                  _buildStatCard(LucideIcons.flame, Colors.orange, _streak.toString(), 'SEQUÊNCIA'),
+                  const SizedBox(width: 12),
+                  _buildStatCard(LucideIcons.zap, const Color(0xFF22c55e), _workoutsThisWeek.toString(), 'ESTA SEM.'),
+                  const SizedBox(width: 12),
+                  _buildStatCard(LucideIcons.trophy, Colors.amber, _totalWorkouts.toString(), 'TOTAL'),
+                ],
               ),
-
+              const SizedBox(height: 32),
+              
               // --- ATIVIDADE DA SEMANA ---
-              Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1c1c1e),
-                    borderRadius: BorderRadius.circular(24),
-                    border: Border.all(color: Colors.white.withOpacity(0.05)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('ATIVIDADE DA SEMANA',
-                          style: TextStyle(
-                              color: Colors.grey,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1.5)),
-                      const SizedBox(height: 20),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: _daysOfWeek.map((day) {
-                          bool isCompleted = _activeDaysThisWeek.contains(day);
-                          bool isToday = day == _todayStr;
-
-                          return Column(
-                            children: [
-                              Container(
-                                width: 36,
-                                height: 36,
-                                decoration: BoxDecoration(
-                                  color: isCompleted
-                                      ? const Color(0xFF22c55e)
-                                      : const Color(0xFF0a0a0a),
-                                  shape: BoxShape.circle,
-                                  border: isCompleted
-                                      ? null
-                                      : Border.all(
-                                          color: isToday
-                                              ? const Color(0xFF22c55e)
-                                                  .withOpacity(0.5)
-                                              : Colors.white.withOpacity(0.05),
-                                          width: isToday ? 2 : 1),
-                                  boxShadow: isCompleted
-                                      ? [
-                                          BoxShadow(
-                                              color: const Color(0xFF22c55e)
-                                                  .withOpacity(0.4),
-                                              blurRadius: 8)
-                                        ]
-                                      : [],
-                                ),
-                                child: isCompleted
-                                    ? const Icon(LucideIcons.check,
-                                        color: Colors.black, size: 16)
-                                    : null,
-                              ),
-                              const SizedBox(height: 8),
-                              Text(day,
-                                  style: TextStyle(
-                                      color: isCompleted || isToday
-                                          ? const Color(0xFF22c55e)
-                                          : Colors.grey,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold)),
-                            ],
-                          );
-                        }).toList(),
-                      ),
-                    ],
-                  ),
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1c1c1e),
+                  borderRadius: BorderRadius.circular(24),
                 ),
-              ),
-
-              // --- PLANO ATIVO (TREINO DE HOJE) ---
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Plano Ativo',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 16),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF14281d),
-                        borderRadius: BorderRadius.circular(28),
-                        border: Border.all(
-                            color: const Color(0xFF22c55e).withOpacity(0.2)),
-                      ),
-                      child: Stack(
-                        children: [
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('FOCO: ${_userGoal.toUpperCase()}',
-                                  style: const TextStyle(
-                                      color: Color(0xFF22c55e),
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 1.5)),
-                              const SizedBox(height: 8),
-                              Text('Treino de $_todayStr',
-                                  style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 24,
-                                      fontWeight: FontWeight.w900)),
-                              const SizedBox(height: 4),
-                              Text(
-                                  _todayExerciseCount > 0
-                                      ? '$_todayExerciseCount exercícios planeados'
-                                      : 'Dia de descanso planeado',
-                                  style: const TextStyle(
-                                      color: Colors.grey, fontSize: 14)),
-                            ],
-                          ),
-                          if (_todayExerciseCount > 0)
-                            Positioned(
-                              right: 0,
-                              bottom: 0,
-                              child: GestureDetector(
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => ActiveWorkoutView(
-                                        day: _todayStr,
-                                        exercises: _todayExercisesList,
-                                      ),
-                                    ),
-                                  ).then((_) => _loadData());
-                                },
-                                child: Container(
-                                  width: 56,
-                                  height: 56,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF22c55e),
-                                    shape: BoxShape.circle,
-                                    boxShadow: [
-                                      BoxShadow(
-                                          color: const Color(0xFF22c55e)
-                                              .withOpacity(0.3),
-                                          blurRadius: 10,
-                                          spreadRadius: 2)
-                                    ],
-                                  ),
-                                  child: const Icon(LucideIcons.play,
-                                      color: Colors.black, size: 28),
-                                ),
+                    const Text('ATIVIDADE DA SEMANA', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: List.generate(7, (index) {
+                        bool isActive = _weekActivity[index];
+                        return Column(
+                          children: [
+                            Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                color: isActive ? const Color(0xFF22c55e) : const Color(0xFF0a0a0a),
+                                shape: BoxShape.circle,
+                                boxShadow: isActive ? [
+                                  BoxShadow(color: const Color(0xFF22c55e).withOpacity(0.4), blurRadius: 12, spreadRadius: 2)
+                                ] : [],
                               ),
-                            )
-                        ],
-                      ),
+                              child: isActive ? const Icon(LucideIcons.check, color: Colors.black, size: 20) : null,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(_daysOfWeek[index], 
+                                style: TextStyle(color: isActive ? const Color(0xFF22c55e) : Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                          ],
+                        );
+                      }),
                     ),
                   ],
                 ),
               ),
+              
+              const SizedBox(height: 32),
+              
+              // --- PLANO ATIVO ---
+              const Text('Plano Ativo', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0d1f15), // Fundo verde escuro estilo dashboard antigo
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: const Color(0xFF22c55e).withOpacity(0.1)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('FOCO: ${_userGoal.toUpperCase()}', 
+                              style: const TextStyle(color: Color(0xFF22c55e), fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+                          const SizedBox(height: 12),
+                          Text('Treino de $_todayDayStr', 
+                              style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: -1)),
+                          const SizedBox(height: 8),
+                          Text(_hasWorkoutToday ? '${_todayExercises.length} exercícios planeados' : 'Dia de descanso planeado', 
+                              style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 14)),
+                        ],
+                      ),
+                    ),
+                    
+                    // --- BOTÃO DE PLAY (Só aparece se houver treino) ---
+                    if (_hasWorkoutToday)
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => ActiveWorkoutView(
+                                day: _todayDayStr,
+                                exercises: _todayExercises,
+                              ),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF22c55e),
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: const Color(0xFF22c55e).withOpacity(0.4),
+                                blurRadius: 12,
+                                spreadRadius: 2,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: const Icon(LucideIcons.play, color: Colors.black, size: 28),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              
+              const SizedBox(height: 80), // Espaço para o botão flutuante não tapar o card
             ],
           ),
         ),
       ),
-      // --- BOTÃO FLUTUANTE DA INTELIGÊNCIA ARTIFICIAL ---
+      
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showAiWorkoutDialog(context),
+        onPressed: () {
+          Navigator.push(context, MaterialPageRoute(builder: (_) => const AiGenerationView()));
+        },
         backgroundColor: const Color(0xFF22c55e),
         icon: const Icon(LucideIcons.sparkles, color: Colors.black),
-        label: const Text('IA',
-            style: TextStyle(color: Colors.black, fontWeight: FontWeight.w900)),
+        label: const Text('GERAR TREINO', style: TextStyle(color: Colors.black, fontWeight: FontWeight.w900)),
       ),
     );
   }
 
-  Widget _buildStatCard(
-      IconData icon, Color iconColor, String value, String label) {
+  Widget _buildStatCard(IconData icon, Color iconColor, String value, String label) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 16),
+        padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 12),
         decoration: BoxDecoration(
           color: const Color(0xFF1c1c1e),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withOpacity(0.05)),
         ),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(icon, color: iconColor, size: 20),
-                const SizedBox(width: 6),
-                Text(value,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold)),
+                const SizedBox(width: 8),
+                Text(value, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
               ],
             ),
-            const SizedBox(height: 6),
-            Text(label,
-                style: const TextStyle(
-                    color: Colors.grey,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1)),
+            const SizedBox(height: 8),
+            Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
           ],
         ),
       ),

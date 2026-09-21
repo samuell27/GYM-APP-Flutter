@@ -1,51 +1,53 @@
 import 'dart:convert';
+import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AiWorkoutService {
-  // <-- O nome exato que as suas telas procuram!
-  static Future<List<Map<String, dynamic>>> generateWorkout(
-      String focusDay) async {
+  static Future<String> generateWorkout(String prompt) async {
     final prefs = await SharedPreferences.getInstance();
-
+    
     final apiKey = prefs.getString('apiKey') ?? '';
-    final model = prefs.getString('geminiModel') ?? 'gemini-1.5-flash';
-
-    if (apiKey.isEmpty) {
-      throw Exception(
-          'Chave da API Gemini não encontrada. Vá ao seu Perfil e configure a chave.');
+    String model = prefs.getString('geminiModel') ?? 'gemini-3.8-flash';
+    
+    // Trava de segurança: Se o cache antigo ainda tiver a versão 1.5, força a transição para a 3.8
+    if (model == 'gemini-1.5-flash') {
+      model = 'gemini-3.8-flash';
+      await prefs.setString('geminiModel', model);
     }
-
-    final age = prefs.getString('userAge') ?? 'Desconhecido';
-    final weight = prefs.getString('userWeight') ?? 'Desconhecido';
+    
+    final age = prefs.getString('userAge') ?? 'Não informado';
+    final weight = prefs.getString('userWeight') ?? 'Não informado';
     final goal = prefs.getString('userGoal') ?? 'Hipertrofia';
 
-    final prompt = '''
-    Atue como um Personal Trainer de elite.
-    
-    Perfil do meu aluno:
+    if (apiKey.trim().isEmpty) {
+      throw Exception('A chave da API está vazia ou não foi carregada. Vá ao Perfil e clique em "Salvar Alterações".');
+    }
+
+    final url = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${apiKey.trim()}');
+
+    final enrichedPrompt = '''
+    Atua como um personal trainer especialista.
+    O utilizador tem as seguintes características:
     - Idade: $age anos
     - Peso: $weight kg
-    - Objetivo Principal: $goal
+    - Objetivo: $goal
     
-    Gere um treino excelente focado em: $focusDay.
-    Ajuste o volume, as repetições e as cargas estimadas (em kg) com base no objetivo de $goal.
+    Pedido do utilizador: $prompt
     
-    RETORNE APENAS UM ARRAY JSON VÁLIDO. NÃO USE formatação markdown (```json).
-    O formato exato obrigatório é:
-    [
-      {
-        "id": "1",
-        "name": "Nome do Exercício",
-        "sets": 4,
-        "reps": "8-12",
-        "load": 20
-      }
-    ]
+    Retorna o treino ESTRITAMENTE num formato JSON válido, com a seguinte estrutura e mais nada:
+    {
+      "name": "Nome do Treino (ex: Treino A - Peito)",
+      "exercises": [
+        {
+          "name": "Nome do Exercício",
+          "sets": 4,
+          "reps": "10-12",
+          "load": 20
+        }
+      ]
+    }
     ''';
-
-    final url = Uri.parse(
-        '[https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey](https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey)');
 
     try {
       final response = await http.post(
@@ -55,32 +57,118 @@ class AiWorkoutService {
           "contents": [
             {
               "parts": [
-                {"text": prompt}
+                {"text": enrichedPrompt}
               ]
             }
           ],
           "generationConfig": {
-            "temperature": 0.7,
+            "responseMimeType": "application/json", 
           }
         }),
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        String rawText = data['candidates'][0]['content']['parts'][0]['text'];
-
-        rawText =
-            rawText.replaceAll('```json', '').replaceAll('```', '').trim();
-
-        final List<dynamic> jsonList = jsonDecode(rawText);
-
-        return jsonList.map((e) => Map<String, dynamic>.from(e)).toList();
+        
+        if (data['candidates'] != null && data['candidates'].isNotEmpty) {
+          final content = data['candidates'][0]['content'];
+          if (content != null && content['parts'] != null && content['parts'].isNotEmpty) {
+            String textResponse = content['parts'][0]['text'];
+            
+            textResponse = textResponse.replaceAll('```json', '').replaceAll('```', '').trim();
+            
+            return textResponse;
+          }
+        }
+        throw Exception('Formato de resposta inesperado da API.');
       } else {
-        throw Exception(
-            'Erro na API Gemini: ${response.statusCode}\n${response.body}');
+        final errorData = jsonDecode(response.body);
+        final errorMessage = errorData['error']?['message'] ?? 'Erro desconhecido';
+        throw Exception('Erro ${response.statusCode}: $errorMessage');
       }
     } catch (e) {
-      throw Exception('Falha ao gerar treino: $e');
+      throw Exception('$e');
+    }
+  }
+  static Future<String> analyzeWorkoutImage(String base64Image) async {
+    final prefs = await SharedPreferences.getInstance();
+    final apiKey = prefs.getString('apiKey') ?? '';
+    String model = prefs.getString('geminiModel') ?? 'gemini-3.8-flash';
+    
+    if (model == 'gemini-1.5-flash') {
+      model = 'gemini-3.8-flash';
+      await prefs.setString('geminiModel', model);
+    }
+
+    final experience = prefs.getString('userExperience') ?? 'Intermediário';
+    final goal = prefs.getString('userGoal') ?? 'Hipertrofia';
+
+    if (apiKey.trim().isEmpty) {
+      throw Exception('Chave da API vazia.');
+    }
+
+    final url = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${apiKey.trim()}');
+
+    final prompt = '''
+    Analisa esta imagem que contém um roteiro de treinos (pode ser uma foto de papel ou print de PDF).
+    Extrai todos os exercícios listados.
+    
+    REGRAS DE INFERÊNCIA:
+    - Se a imagem indicar séries e repetições (ex: 3x12), usa esses valores.
+    - Se a imagem NÃO indicar séries/repetições, infere os melhores valores baseados num utilizador de nível $experience com foco em $goal.
+    - Se não houver carga (kg) indicada, define "load": 0.
+    
+    Retorna ESTRITAMENTE num formato JSON válido:
+    {
+      "name": "Nome do Treino Identificado (ex: Treino A, Costas, etc)",
+      "exercises": [
+        {
+          "name": "Nome do Exercício",
+          "sets": 4,
+          "reps": "10-12",
+          "load": 0
+        }
+      ]
+    }
+    ''';
+
+    try {
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          "contents": [
+            {
+              "parts": [
+                {"text": prompt},
+                {
+                  "inlineData": {
+                    "mimeType": "image/jpeg",
+                    "data": base64Image
+                  }
+                }
+              ]
+            }
+          ],
+          "generationConfig": {
+            "responseMimeType": "application/json", 
+          }
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['candidates'] != null && data['candidates'].isNotEmpty) {
+          String textResponse = data['candidates'][0]['content']['parts'][0]['text'];
+          return textResponse.replaceAll('```json', '').replaceAll('```', '').trim();
+        }
+        throw Exception('Formato de resposta inesperado.');
+      } else {
+        final errorData = jsonDecode(response.body);
+        throw Exception('Erro ${response.statusCode}: ${errorData['error']?['message']}');
+      }
+    } catch (e) {
+      throw Exception('$e');
     }
   }
 }

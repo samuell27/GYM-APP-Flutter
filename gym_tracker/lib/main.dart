@@ -8,6 +8,7 @@ import 'views/home_view.dart';
 import 'views/workouts_view.dart';
 import 'views/progress_view.dart';
 import 'views/profile_view.dart';
+import 'views/onboarding_view.dart';
 import 'firebase_options.dart';
 
 void main() async {
@@ -36,7 +37,7 @@ class GymTrackerApp extends StatelessWidget {
           unselectedItemColor: Colors.grey,
         ),
       ),
-      // StreamBuilder para detetar mudanças de sessão (Login / Logout)
+      // StreamBuilder para detectar mudanças de sessão (Login / Logout)
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
@@ -49,17 +50,12 @@ class GymTrackerApp extends StatelessWidget {
           }
           
           if (snapshot.hasData) {
-            // Utilizador autenticado: Mostra a aplicação principal
+            // Usuário autenticado: Mostra a aplicação principal
             return const MainNavigator();
           }
           
-          // Utilizador não autenticado: Aqui chamaria a sua tela de Login ou Onboarding.
-          // Se tiver uma OnboardingView(), basta colocar aqui em vez deste Scaffold.
-          return const Scaffold(
-            body: Center(
-              child: Text('Sessão terminada. Por favor, inicie sessão novamente.', style: TextStyle(color: Colors.white)),
-            ),
-          );
+          // Usuário não autenticado: Retorna a tela real de Onboarding/Login sem o const
+          return OnboardingView(onFinish: () {});
         },
       ),
     );
@@ -76,7 +72,7 @@ class MainNavigator extends StatefulWidget {
 class _MainNavigatorState extends State<MainNavigator> {
   int _currentIndex = 0;
 
-  // Lista de ecrãs. Note que a ProgressView não tem 'const' devido à forma como a construímos.
+  // Lista de telas
   final List<Widget> _views = [
     const HomeView(),
     const WorkoutsView(),
@@ -105,7 +101,7 @@ class _MainNavigatorState extends State<MainNavigator> {
           );
         },
         child: Container(
-          // O ValueKey é obrigatório para o Flutter detetar a troca e animar
+          // O ValueKey é obrigatório para o Flutter detectar a troca e animar
           key: ValueKey<int>(_currentIndex), 
           child: _views[_currentIndex],
         ),
@@ -117,7 +113,7 @@ class _MainNavigatorState extends State<MainNavigator> {
         child: BottomNavigationBar(
           currentIndex: _currentIndex,
           onTap: (index) {
-            // Apenas aciona a reconstrução se estiver a mudar para um separador diferente
+            // Apenas aciona a reconstrução se estiver mudando para uma aba diferente
             if (_currentIndex != index) {
               setState(() => _currentIndex = index);
             }

@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Regra para o histórico de treinos
+    match /workout_history/{document} {
+      // O utilizador tem de ter sessão iniciada
+      // Na CRIAÇÃO: O UID enviado tem de ser o dele próprio
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userUid;
+      
+      // Na LEITURA/ATUALIZAÇÃO/APAGAR: O documento tem de pertencer ao UID dele
+      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.userUid;
+    }
+
+    // Regra para os perfis dos utilizadores
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
